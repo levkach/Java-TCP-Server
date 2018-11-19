@@ -9,6 +9,9 @@ package robot;
 import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.ArrayList;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.regex.Pattern;
 
 public class Robot {
@@ -24,7 +27,6 @@ public class Robot {
     }
 
     public static void main(String[] args) {
-
         try {
             int port = Integer.parseInt(args[0]);
             if (port >= 3000 && port <= 3999) {
@@ -37,6 +39,7 @@ public class Robot {
     }
 
     private void serve() {
+//        final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(10);
         while (true) {
             Socket client = null;
             try {
@@ -44,7 +47,6 @@ public class Robot {
             } catch (Exception err) {
                 err.printStackTrace();
             }
-            System.err.println("new client");
             new Thread(new TCPServer(client)).start();
         }
     }
@@ -55,26 +57,7 @@ public class Robot {
         private Socket client;
         private BufferedInputStream inp;
         private PrintWriter w;
-        private Timer timer;
-
-
-        class Timer {
-
-            private long period;
-            private long start;
-
-            Timer(long period) {
-                this.period = period;
-            }
-
-            void start() {
-                this.start = System.currentTimeMillis();
-            }
-
-            boolean isTimedout() {
-                return System.currentTimeMillis() - start > period;
-            }
-        }
+        private StringBuilder convo;
 
         public TCPServer(Socket client) {
             this.client = client;
@@ -82,6 +65,7 @@ public class Robot {
             try {
                 w = new PrintWriter(client.getOutputStream());
                 inp = new BufferedInputStream(client.getInputStream());
+                convo = new StringBuilder();
             } catch (Exception e) {
                 e.printStackTrace();
             }
@@ -90,87 +74,37 @@ public class Robot {
         public void run() {
             try {
                 // Execute time period communication loop
-                this.timer = new Timer(10000);
-                timer.start();
                 // Test account
                 // Robot345
                 // 674
-                while (!timer.isTimedout()) {
+                while (true) {
                     // Read login
-                    log("200 LOGIN");
+                    log("200");
                     int actualChecksum = readUsername();
                     //Read passphrase
-                    log("201 PASSWORD");
+                    log("201");
                     int password = readPassword();
                     // Check login syntax
                     if (actualChecksum == -1 || password == -1) {
                         System.err.println("BAD SYNTAX. CLIENT DISCONNECTED.");
-                        log("500 LOGIN FAILED");
-                        client.close();
+                        log("500");
                         break;
                     } else {
                         if (actualChecksum == password) {
-                            log("202 OK");
-                            System.err.println("CLIENT CONNECTED");
+                            System.err.println("CLIENT " + client.getInetAddress().toString() + " CONNECTED");
+                            log("202");
                         } else {
-                            System.err.println("CLIENT DISCONNECTED. BAD CHECKSUM.");
-                            log("500 LOGIN FAILED");
-                            client.close();
+                            System.err.println("CLIENT " + client.getInetAddress().toString() + "DISCONNECTED. WRONG PASSWORD");
+                            log("500");
                             break;
                         }
                     }
-
                     // Main communication with client
-
-                    // Messages backlog
-                    StringBuilder convo = new StringBuilder();
-
-
                     while (true) {
-                        String command = readCommand();
-
-                        //If null is returned, syntax was bad and message already sent, just break here
-                        if (command == null) {
-                            break;
-                        }
-
-                        if (command.matches("INFO [\\s\\S]*")) {
-                            // INFO command
-
-                            convo.append(command);
-                            log("202 OK");
-                        } else if (command.matches("FOTO .+")) {
-                            // FOTO command
-
-                            //Retrieve arguments
-                            String[] arguments = command.split(" ");
-                            int size = Integer.parseInt(arguments[1]);
-                            String temp = arguments[2];
-                            // Check if number of bytes entered matches the entered size
-                            if (temp.length() != size) {
-                                log("300 BAD CHECKSUM");
-                            }
-                            //Compute actual checksum
-                            byte[] data = temp.substring(0, size).getBytes();
-                            String dataChecksum = Integer.toHexString(getChecksum(data));
-
-                            //Compare with entered checksum
-                            String enteredChecksum = temp.substring(size);
-
-
-                            //Check checksum
-
-                            // Create and save the image
-                            // TODO: What's the image transport protocol?
-                            // Until found, save as TXT
-
-                            log("202 OK");
+                        if (!client.isClosed()) {
+                            readCommand();
                         }
                     }
-                }
-                //45 secs exceeded
-                if (timer.isTimedout()) {
-                    timeout();
                 }
             } catch (Exception e) {
                 System.err.println(e.getMessage());
@@ -179,118 +113,192 @@ public class Robot {
         }
 
 
-        private void timeout() {
-            try {
-                if (!client.isClosed()) {
-                    log("502 TIMEOUT");
-                    client.close();
-                    //45 secs exceeded
-                    System.exit(502);
-                }
-            } catch (Exception e){
-                e.printStackTrace();
-            }
-
-        }
-
         // Reads username; Returns username checksum or -1, if bad syntax
         private int readUsername() {
-            int temp = 0;
+            int temp;
             int counter = 0;
             final String right = "Robot";
+            boolean incorrect = false;
             int sum = 0;
-            char before = ' '; char last = ' ';
+            char before = ' ';
+            char last = ' ';
             try {
-                while (!(before == '\r' && last =='\n')) {
-                    before = (char) temp;
+                while (!(before == '\r' && last == '\n')) {
+                    before = last;
                     temp = inp.read();
                     last = (char) temp;
                     if (counter < 5 && right.charAt(counter++) != last) {
-                        return -1;
+                        incorrect = true;
                     }
-                    sum += (byte) last;
+                    sum += temp;
                 }
             } catch (Exception e) {
                 e.printStackTrace();
             }
-            sum -= (byte)'\r' + (byte)'\n';
-            return sum;
+            sum -= (byte) '\r' + (byte) '\n';
+            return incorrect ? -1 : sum;
         }
 
         // Reads password. Returns number, or -1 if bad syntax
         private int readPassword() {
             StringBuilder line = new StringBuilder();
             int sum = 0;
-            char before = ' '; char last = ' ';
+            boolean incorrect = false;
             try {
                 while (!line.toString().contains("\r\n")) {
                     line.append((char) inp.read());
                 }
-                sum = Integer.parseInt(line.substring(0,line.length() - 2));
+                sum = Integer.parseInt(line.substring(0, line.length() - 2));
             } catch (NumberFormatException e) {
                 e.printStackTrace();
-                return -1;
+                incorrect = true;
             } catch (Exception stE) {
                 stE.printStackTrace();
             }
-            return sum;
+            return incorrect ? -1 : sum;
         }
 
 
         // Reads a command from input and performs syntax checking
-        private String readCommand() {
+        private void readCommand() {
             try {
-                StringBuilder line = new StringBuilder();
-                char symbol = ' ';
-                while (!line.toString().endsWith("\r\n")) {
-                    symbol = (char) inp.read();
-                    line.append(symbol);
-                    if (!Pattern.matches(
-                            "(I)|(IN)|(INF)|(INFO)|(INFO )|(INFO [\\s\\S]*)" +
-                                    "|" +
-                                    "(F)|(FO)|(FOT)|(FOTO)|(FOTO )|(FOTO [1-9][0-9]*)|(FOTO [1-9][0-9]* )|(FOTO [1-9][0-9]* \\S+)|(FOTO [1-9][0-9]* \\S+\r)|(FOTO [1-9][0-9]* \\S+\r\n)", line)) {
-                        // INFO command Syntax: INFO Teplotni senzor c.3 se porouchal.\r\n
-                        // FOTO command Syntax: FOTO 2775 @xfv8aw**<%#cd^aa ...(celkem 2775 bytu binarnich dat) (4 byty kontrolniho souctu)
-                        // Bad command. Send 501 and quit.
-                        log("501 SYNTAX ERROR");
-                        client.close();
-                        return null;
+                StringBuilder command = new StringBuilder();
+                StringBuilder message = new StringBuilder();
+                StringBuilder enteredChecksum = new StringBuilder();
+
+                int[] data = null;
+                int temp;
+                boolean matched = false;
+                boolean readyForData = false;
+                char before = ' ';
+                char last = ' ';
+                int size = 0;
+                int ind = 0;
+                int counted = 0;
+                while (!(before == '\r' && last == '\n')) {
+                    before = last;
+                    temp = inp.read();
+                    last = (char) temp;
+
+                    if (!matched) {
+                        command.append((char) temp);
+                        // Check syntax, as user enters command
+                        if (!Pattern.matches(
+                                "(I)|(IN)|(INF)|(INFO)|(INFO )" +
+                                        "|" +
+                                        "(F)|(FO)|(FOT)|(FOTO)|(FOTO )", command)) {
+                            log("501");
+                        }
+                    }
+
+                    if (command.toString().equals("INFO ")) {
+                        matched = true;
+                        message.append(last);
+                    } else if (command.toString().equals("FOTO ")) {
+                        matched = true;
+                        if (readyForData) {
+                            //Foto already read, now read checksum
+                            if (ind == size) {
+                                enteredChecksum.append((char) temp);
+                            } else {
+                                //Reading foto and adding to checksum in DEC
+                                data[ind++] = temp;
+                                counted += temp;
+                            }
+                        } else {
+                            message.append(last);
+                            if (message.lastIndexOf(" ") != 0) {
+                                // Size read. Parse it and begin reading of foto.
+                                size = Integer.parseInt(message.toString().trim());
+                                data = new int[size];
+                                readyForData = true;
+                            }
+                        }
                     }
                 }
-                return line.substring(0, line.length() - 2);
+
+
+                if (matched) {
+                    if (command.toString().equals("FOTO ")) {
+                        if (data == null) {
+                            log("501");
+                        } else {
+                            enteredChecksum.setLength(enteredChecksum.length() - 2);
+                            long checksum = Long.parseLong(enteredChecksum.toString(), 16);
+                            System.err.println("COUNTED: " + counted + "ENTERED: " + checksum);
+                            if (checksum == counted) {
+                                savePhoto(data);
+                                log("202");
+                            } else {
+                                log("300");
+                            }
+                        }
+                    } else {
+                        String msg = "From " + client.getInetAddress().toString() + " recieved: " + message + "\n";
+                        convo.append(msg);
+                        log("202");
+                    }
+                }
+
+            } catch (NumberFormatException ex) {
+                log("501");
             } catch (IOException e) {
                 e.printStackTrace();
             }
-            return null;
         }
 
 
-        private void log(String message) {
+        void log(String s) {
+            String message = "";
+            boolean toDisconnect = false;
+            switch (s) {
+                case "200":
+                    message = "200 LOGIN";
+                    break;
+
+                case "201":
+                    message = "201 PASSWORD";
+                    break;
+
+                case "202":
+                    message = "202 OK";
+                    break;
+
+                case "300":
+                    message = "300 BAD CHECKSUM";
+                    break;
+
+                case "500":
+                    message = "500 LOGIN FAILED";
+                    toDisconnect = true;
+                    break;
+
+                case "501":
+                    message = "501 SYNTAX ERROR";
+                    toDisconnect = true;
+                    break;
+
+                case "502":
+                    message = "502 TIMEOUT";
+                    toDisconnect = true;
+                    break;
+
+            }
+
             try {
                 w.print(message);
                 w.print("\r\n");
                 w.flush();
+                if (toDisconnect) {
+                    client.close();
+                }
             } catch (Exception e) {
                 e.printStackTrace();
             }
         }
 
-        private int getChecksum(String s) {
-            int sum = 0;
-            for (int i = 0; i < s.length(); i++) {
-                sum += (byte) s.charAt(i);
-            }
-            return sum;
-        }
+        private void savePhoto(int[] data) {
 
-        private int getChecksum(byte[] arr) {
-            int sum = 0;
-            for (byte anArr : arr) {
-                sum += anArr;
-            }
-            return sum;
         }
     }
-
-
 }
